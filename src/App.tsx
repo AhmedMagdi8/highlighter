@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
-  // AreaHighlight,
   Highlight,
   PdfHighlighter,
   PdfLoader,
@@ -8,12 +7,11 @@ import {
   Tip,
 } from "react-pdf-highlighter";
 import type {
-  // Content,
   IHighlight,
   NewHighlight,
   ScaledPosition,
 } from "react-pdf-highlighter";
-import { getDocument } from "pdfjs-dist";
+import { getDocument, PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 
 import { Sidebar } from "./Sidebar";
 import { Spinner } from "./Spinner";
@@ -25,151 +23,151 @@ import "../dist/style.css";
 const testHighlights: Record<string, Array<IHighlight>> = _testHighlights;
 
 const getNextId = () => String(Math.random()).slice(2);
-
-const parseIdFromHash = () =>
-  document.location.hash.slice("#highlight-".length);
-
-const resetHash = () => {
-  document.location.hash = "";
-};
+const parseIdFromHash = () => document.location.hash.slice("#highlight-".length);
+const resetHash = () => (document.location.hash = "");
 
 const HighlightPopup = ({
   comment,
 }: {
   comment: { text: string; emoji: string };
-}) =>
-  comment.text ? (
-    <div className="Highlight__popup">
-      {comment.emoji} {comment.text}
-    </div>
-  ) : null;
+}) => (comment.text ? (
+  <div className="Highlight__popup">
+    {comment.emoji} {comment.text}
+  </div>
+) : null);
 
 const PRIMARY_PDF_URL = "https://arxiv.org/pdf/1708.08021";
 const SECONDARY_PDF_URL = "https://arxiv.org/pdf/1604.02480";
 
-export function App() {
-  const searchParams = new URLSearchParams(document.location.search);
-  const initialUrl = searchParams.get("url") || PRIMARY_PDF_URL;
+const highlightWords = async (
+  url: string,
+  words: string[],
+  setHighlights: React.Dispatch<React.SetStateAction<Array<IHighlight>>>
+) => {
+  try {
+    const pdfDocument = await getDocument(url).promise;
+    const highlightsToAdd: IHighlight[] = [];
 
-  const [url, setUrl] = useState(initialUrl);
-  const [highlights, setHighlights] = useState<Array<IHighlight>>(
-    testHighlights[initialUrl] ? [...testHighlights[initialUrl]] : []
-  );
-
-  const resetHighlights = () => {
-    setHighlights([]);
-  };
-
-  const toggleDocument = () => {
-    const newUrl =
-      url === PRIMARY_PDF_URL ? SECONDARY_PDF_URL : PRIMARY_PDF_URL;
-    setUrl(newUrl);
-    setHighlights(testHighlights[newUrl] ? [...testHighlights[newUrl]] : []);
-  };
-
-  const scrollViewerTo = useRef((highlight: IHighlight) => {});
-
-  const scrollToHighlightFromHash = useCallback(() => {
-    const highlight = getHighlightById(parseIdFromHash());
-    if (highlight) {
-      scrollViewerTo.current(highlight);
-    }
-  }, [highlights]);
-
-  useEffect(() => {
-    window.addEventListener("hashchange", scrollToHighlightFromHash, false);
-    return () => {
-      window.removeEventListener(
-        "hashchange",
-        scrollToHighlightFromHash,
-        false
-      );
-    };
-  }, [scrollToHighlightFromHash]);
-
-  const getHighlightById = (id: string) => {
-    return highlights.find((highlight) => highlight.id === id);
-  };
-
-  const addHighlight = (highlight: NewHighlight) => {
-    console.log("Saving highlight", highlight);
-    setHighlights((prevHighlights) => [
-      { ...highlight, id: getNextId() },
-      ...prevHighlights,
-    ]);
-  };
-
-  const highlightWords = async (words: string[]) => {
-    const highlightsToAdd: Array<IHighlight> = [];
-    const loadingTask = getDocument(url);
-    const pdfDocument = await loadingTask.promise;
-
-    const findWordPositions = async (pdfDocument: any, word: string) => {
+    const findWordPositions = async (searchWord: string) => {
       const positions: ScaledPosition[] = [];
-
-      for (let i = 1; i <= pdfDocument.numPages; i++) {
-        const page = await pdfDocument.getPage(i);
+    
+      // Escape special regex characters in the search word
+      const escapedWord = searchWord.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`\\b${escapedWord}\\b`, "g"); // Case-sensitive, whole-word match
+    
+      for (let pageNum = 1; pageNum <= pdfDocument.numPages; pageNum++) {
+        const page = await pdfDocument.getPage(pageNum);
         const textContent = await page.getTextContent();
-        console.log(textContent);
-        
-        const textItems = textContent.items as Array<{ str: string; transform: number[] }>;
-
-        textItems.forEach((item) => {
-          if (item.str.includes(word)) {
-            const [x, y, , height, width] = item.transform;
+        const viewport = page.getViewport({ scale: 1 });
+    
+        textContent.items.forEach((item) => {
+          const itemText = (item as any).str;
+          let match;
+    
+          while ((match = regex.exec(itemText)) !== null) {
+            const startIndex = match.index;
+            const endIndex = regex.lastIndex;
+            const textWidth = (item as any).width;
+            const charWidth = textWidth / itemText.length;
+    
+            // Calculate the position of the matched word
+            const x = item.transform[4] + startIndex * charWidth;
+            const y = viewport.height - item.transform[5];
+            const width = (endIndex - startIndex) * charWidth;
+            const height = (item as any).height;
+    
+            // Push the position data to the positions array
             positions.push({
-              pageNumber: i,
+              pageNumber: pageNum,
               boundingRect: {
                 x1: x,
                 y1: y - height,
                 x2: x + width,
                 y2: y,
-                width: 0,
-                height: 0
+                width: viewport.width,
+                height: viewport.height,
               },
-              rects: [],
+              rects: [{
+                x1: x,
+                y1: y - height,
+                x2: x + width,
+                y2: y,
+                width: width,
+                height: height,
+              }],
             });
           }
         });
       }
-
+    
+      console.log(positions);
       return positions;
     };
 
     for (const word of words) {
-      const positions = await findWordPositions(pdfDocument, word);
-      positions.forEach((position) => {
-        highlightsToAdd.push({
-          id: getNextId(),
-          position,
-          content: { text: word },
-          comment: { text: `Highlighted: ${word}`, emoji: "🔍" },
-        });
-      });
+      const positions = await findWordPositions(word);
+      highlightsToAdd.push(...positions.map(position => ({
+        id: getNextId(),
+        position,
+        content: { text: word },
+        comment: {
+          text: `Automatically highlighted: ${word}`,
+          emoji: "🔍"
+        }
+      })));
     }
 
-    setHighlights((prev) => [...prev, ...highlightsToAdd]);
-  };
+    setHighlights(prev => [...prev, ...highlightsToAdd]);
+  } catch (error) {
+    console.error("Error highlighting words:", error);
+  }
+};
 
+export function App() {
+  const [url, setUrl] = useState(new URLSearchParams(document.location.search).get("url") || PRIMARY_PDF_URL);
+  const [highlights, setHighlights] = useState<Array<IHighlight>>(
+    testHighlights[url] ? [...testHighlights[url]] : []
+  );
+
+  const scrollViewerTo = useRef<(highlight: IHighlight) => void>(() => {});
+
+  // Highlight initialization
   useEffect(() => {
     const wordsToHighlight = ["In"];
-    highlightWords(wordsToHighlight);
+    highlightWords(url, wordsToHighlight, setHighlights);
   }, [url]);
+
+  // Document handling
+  const toggleDocument = () => {
+    const newUrl = url === PRIMARY_PDF_URL ? SECONDARY_PDF_URL : PRIMARY_PDF_URL;
+    setUrl(newUrl);
+    setHighlights(testHighlights[newUrl] ? [...testHighlights[newUrl]] : []);
+  };
+
+  // Highlight interactions
+  const addHighlight = (highlight: NewHighlight) => {
+    setHighlights(prev => [{ ...highlight, id: getNextId() }, ...prev]);
+  };
+
+  // Scrolling and hash handling
+  const scrollToHighlightFromHash = useCallback(() => {
+    const highlight = highlights.find(h => h.id === parseIdFromHash());
+    if (highlight) scrollViewerTo.current(highlight);
+  }, [highlights]);
+
+  useEffect(() => {
+    window.addEventListener("hashchange", scrollToHighlightFromHash);
+    return () => window.removeEventListener("hashchange", scrollToHighlightFromHash);
+  }, [scrollToHighlightFromHash]);
 
   return (
     <div className="App" style={{ display: "flex", height: "100vh" }}>
       <Sidebar
         highlights={highlights}
-        resetHighlights={resetHighlights}
+        resetHighlights={() => setHighlights([])}
         toggleDocument={toggleDocument}
       />
-      <div
-        style={{
-          height: "100vh",
-          width: "75vw",
-          position: "relative",
-        }}
-      >
+      <div style={{ height: "100vh", width: "75vw", position: "relative" }}>
         <PdfLoader url={url} beforeLoad={<Spinner />}>
           {(pdfDocument) => (
             <PdfHighlighter
@@ -180,52 +178,36 @@ export function App() {
                 scrollViewerTo.current = scrollTo;
                 scrollToHighlightFromHash();
               }}
-              onSelectionFinished={(
-                position,
-                content,
-                hideTipAndSelection,
-                transformSelection
-              ) => (
+              onSelectionFinished={(position, content, hideTip, transformSelection) => (
                 <Tip
                   onOpen={transformSelection}
                   onConfirm={(comment) => {
                     addHighlight({ content, position, comment });
-                    hideTipAndSelection();
+                    hideTip();
                   }}
                 />
               )}
-              highlightTransform={(
-                highlight,
-                index,
-                setTip,
-                hideTip,
-                viewportToScaled,
-                screenshot,
-                isScrolledTo
-              ) => {
-                const isProgrammaticHighlight = highlight.comment?.text.includes(
-                  "Highlighted:"
-                );
-
-                const style = isProgrammaticHighlight
-                  ? { backgroundColor: "yellow" }
-                  : undefined;
-
+              highlightTransform={(highlight, index, setTip, hideTip, _, __, isScrolledTo) => {
+                const isAutoHighlight = highlight.comment?.text.startsWith("Automatically highlighted:");
+                
                 return (
                   <Popup
                     popupContent={<HighlightPopup {...highlight} />}
-                    onMouseOver={(popupContent) =>
-                      setTip(highlight, () => popupContent)
-                    }
+                    onMouseOver={() => setTip(highlight, () => <HighlightPopup {...highlight} />)}
                     onMouseOut={hideTip}
                     key={index}
                   >
-                    <Highlight
-                      isScrolledTo={isScrolledTo}
-                      position={highlight.position}
-                      comment={highlight.comment}
-                      style={style}
-                    />
+                    <div style={{
+                      backgroundColor: isAutoHighlight ? "rgba(255, 255, 0, 0.6)" : "rgba(173, 216, 230, 0.9)",
+                      borderRadius: "2px",
+                      transition: "background-color 0.2s"
+                    }}>
+                      <Highlight
+                        isScrolledTo={isScrolledTo}
+                        position={highlight.position}
+                        comment={highlight.comment}
+                      />
+                    </div>
                   </Popup>
                 );
               }}
